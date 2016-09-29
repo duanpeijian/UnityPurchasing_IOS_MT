@@ -227,6 +227,188 @@ int delayInSeconds = 2;
 }
 
 #pragma mark -
+#pragma mark add by stardust
+
+-(void) setDownloadCallback:(SKDownloadCallback)callback {
+    downloadCallback = callback;
+}
+
+-(void) updateDownloadStatus:(IAPDownloadStatus)status payload:(NSString*)transId inProgress:(float)progress{
+    downloadCallback(status, transId.UTF8String, progress);
+}
+
+-(BOOL) tryDownload: (NSString *) transactionIdentifier {
+    SKPaymentTransaction* transaction = [pendingTransactions objectForKey:transactionIdentifier];
+    if (nil != transaction) {
+        if(transaction.downloads && transaction.downloads.count > 0){
+            UnityPurchasingLog(@"start download transaction %@", transactionIdentifier);
+            IAPDownloadStatus status = IAPDownloadStarted;
+            [self updateDownloadStatus:status payload:transaction.payment.productIdentifier inProgress:0];
+            
+            [[SKPaymentQueue defaultQueue] startDownloads:transaction.downloads];
+            return true;
+        }
+    } else {
+        UnityPurchasingLog(@"Transaction %@ not found!", transactionIdentifier);
+    }
+    
+    return false;
+}
+
+-(void) cancelDownload: (NSString*) transactionIdentifier {
+    SKPaymentTransaction* transaction = [pendingTransactions objectForKey:transactionIdentifier];
+    if (nil != transaction) {
+        if(transaction.downloads && transaction.downloads.count > 0){
+            [[SKPaymentQueue defaultQueue] cancelDownloads:transaction.downloads];
+        }
+    }
+}
+
+-(void) pauseDownload: (NSString*) transactionIdentifier {
+    SKPaymentTransaction* transaction = [pendingTransactions objectForKey:transactionIdentifier];
+    if (nil != transaction) {
+        if(transaction.downloads && transaction.downloads.count > 0){
+            [[SKPaymentQueue defaultQueue] pauseDownloads:transaction.downloads];
+        }
+    }
+}
+
+-(void) resumeDownload: (NSString*) transactionIdentifier {
+    SKPaymentTransaction* transaction = [pendingTransactions objectForKey:transactionIdentifier];
+    if (nil != transaction) {
+        if(transaction.downloads && transaction.downloads.count > 0){
+            [[SKPaymentQueue defaultQueue] resumeDownloads:transaction.downloads];
+        }
+    }
+}
+
+// Called when the payment queue has downloaded content
+- (void)paymentQueue:(SKPaymentQueue *)queue updatedDownloads:(NSArray *)downloads
+{
+    for (SKDownload* download in downloads)
+    {
+        switch (download.downloadState)
+        {
+                // The content is being downloaded. Let's provide a download progress to the user
+            case SKDownloadStateActive:
+            {
+                IAPDownloadStatus status = IAPDownloadInProgress;
+                NSString* purchasedID = download.transaction.payment.productIdentifier;
+                float percent = download.progress*100;
+                [self updateDownloadStatus:status payload:purchasedID inProgress:percent];
+            }
+                break;
+                
+            case SKDownloadStateCancelled:
+                // StoreKit saves your downloaded content in the Caches directory. Let's remove it
+                // before finishing the transaction.
+                [[NSFileManager defaultManager] removeItemAtURL:download.contentURL error:nil];
+                [self finishDownloadTransaction:download];
+                break;
+                
+            case SKDownloadStateFailed:
+                // If a download fails, remove it from the Caches, then finish the transaction.
+                // It is recommended to retry downloading the content in this case.
+                [[NSFileManager defaultManager] removeItemAtURL:download.contentURL error:nil];
+                [self finishDownloadTransaction:download];
+                break;
+                
+            case SKDownloadStatePaused:
+                NSLog(@"Download was paused");
+                break;
+                
+            case SKDownloadStateFinished:
+                // Download is complete. StoreKit saves the downloaded content in the Caches directory.
+                NSLog(@"Location of downloaded file %@",download.contentURL);
+                [self finishDownloadTransaction:download];
+                break;
+                
+            case SKDownloadStateWaiting:
+                NSLog(@"Download Waiting");
+                [[SKPaymentQueue defaultQueue] startDownloads:@[download]];
+                break;
+                
+            default:
+                break;
+        }
+    }
+}
+
+- (void)finishDownloadTransaction:(SKDownload*)download
+{
+    SKPaymentTransaction* transaction = download.transaction;
+    
+    //allAssetsDownloaded indicates whether all content associated with the transaction were downloaded.
+    BOOL allAssetsDownloaded = YES;
+    
+    // A download is complete if its state is SKDownloadStateCancelled, SKDownloadStateFailed, or SKDownloadStateFinished
+    // and pending, otherwise. We finish a transaction if and only if all its associated downloads are complete.
+    // For the SKDownloadStateFailed case, it is recommended to try downloading the content again before finishing the transaction.
+    for (SKDownload* download in transaction.downloads)
+    {
+        if (download.downloadState != SKDownloadStateCancelled &&
+            download.downloadState != SKDownloadStateFailed &&
+            download.downloadState != SKDownloadStateFinished )
+        {
+            //Let's break. We found an ongoing download. Therefore, there are still pending downloads.
+            allAssetsDownloaded = NO;
+            break;
+        }
+    }
+    
+    NSFileManager* manager = [NSFileManager defaultManager];
+    NSURL* dstUrl = [manager URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask appropriateForURL:nil create:FALSE error:nil];
+    UnityPurchasingLog(@"document: %@", dstUrl);
+    
+    if (download.downloadState == SKDownloadStateFailed)
+    {
+        IAPDownloadStatus status = IAPDownloadFailed;
+        float percent = download.progress*100;
+        [self updateDownloadStatus:status payload:transaction.transactionIdentifier inProgress:percent];
+    }
+    
+    if(download.downloadState == SKDownloadStateCancelled){
+        IAPDownloadStatus status = IAPDownloadCanceled;
+        float percent = download.progress*100;
+        [self updateDownloadStatus:status payload:transaction.transactionIdentifier inProgress:percent];
+    }
+    
+    // Finish the transaction and post a IAPDownloadSucceeded notification if all downloads are complete
+    if(download.downloadState == SKDownloadStateFinished){
+        
+        NSString* bookName = @"MotangEBook.pdf";
+        
+        NSError* error;
+        dstUrl = [dstUrl URLByAppendingPathComponent:bookName];
+        
+        //Remove the previous content;
+        BOOL ret = [manager removeItemAtURL:dstUrl error:&error];
+        if(!ret){
+            UnityPurchasingLog(@"remove item error: %@", error);
+        }
+        
+        NSURL* srcUrl = download.contentURL;
+        NSString* relativePath = [NSString stringWithFormat:@"Contents/%@", bookName];
+        
+        BOOL isDir = YES;
+        if([manager fileExistsAtPath: [srcUrl URLByAppendingPathComponent:relativePath].path isDirectory:&isDir]){
+            UnityPurchasingLog(@"pdf exists, is Directory: %@", isDir);
+            srcUrl = [srcUrl URLByAppendingPathComponent: relativePath];
+        }
+        
+        // Copy the download content;
+        ret = [manager copyItemAtURL:srcUrl toURL:dstUrl error: &error];
+        if(!ret){
+            UnityPurchasingLog(@"copy item error: %@", error);
+        }
+        
+        IAPDownloadStatus status = IAPDownloadSucceeded;
+        float percent = download.progress*100;
+        [self updateDownloadStatus:status payload:transaction.transactionIdentifier inProgress:percent];
+    }
+}
+
+#pragma mark -
 #pragma mark SKProductsRequestDelegate Methods
 
 // Store Kit returns a response from an SKProductsRequest.
@@ -510,4 +692,35 @@ char* getUnityPurchasingAppReceipt () {
 
 BOOL getUnityPurchasingCanMakePayments () {
     return [SKPaymentQueue canMakePayments];
+}
+
+#pragma mark -
+#pragma mark add by stardust
+
+void setUnityPurchasingDownloadCallback(SKDownloadCallback callback){
+    [UnityPurchasing_getInstance() setDownloadCallback:callback];
+    
+    NSFileManager* manager = [NSFileManager defaultManager];
+    NSURL* dstUrl = [manager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask][0];
+    UnityPurchasingLog(@"document: %@", dstUrl);
+}
+
+BOOL unityPurchasingTryDownload(const char* transactionId){
+    NSString* tranId = [NSString stringWithUTF8String:transactionId];
+    return [UnityPurchasing_getInstance() tryDownload:tranId];
+}
+
+void unityPurchasingCancelDownload(const char* transactionId){
+    NSString* tranId = [NSString stringWithUTF8String:transactionId];
+    [UnityPurchasing_getInstance() cancelDownload:tranId];
+}
+
+void unityPurchasingPauseDownload(const char* transactionId){
+    NSString* tranId = [NSString stringWithUTF8String:transactionId];
+    [UnityPurchasing_getInstance() pauseDownload:tranId];
+}
+
+void unityPurchasingResumeDownload(const char* transactionId){
+    NSString* tranId = [NSString stringWithUTF8String:transactionId];
+    [UnityPurchasing_getInstance() resumeDownload:tranId];
 }

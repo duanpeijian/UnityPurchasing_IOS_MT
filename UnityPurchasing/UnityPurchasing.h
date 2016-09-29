@@ -1,5 +1,16 @@
 #import <StoreKit/StoreKit.h>
 
+typedef NS_ENUM(NSInteger, IAPDownloadStatus)
+{
+    IAPDownloadStarted, // Indicates that downloading a hosted content has started
+    IAPDownloadInProgress, // Indicates that a hosted content is currently being downloaded
+    IAPDownloadFailed,  // Indicates that downloading a hosted content failed
+    IAPDownloadSucceeded, // Indicates that a hosted content was successfully downloaded
+    IAPDownloadCanceled
+};
+
+typedef void (*SKDownloadCallback)(int status, const char* payload, float progress);
+
 // Callback to Unity identifying the subject, JSON message body and optional app receipt.
 // Note that App Receipts are sent separately to the JSON body for performance reasons.
 typedef void (*UnityPurchasingCallback)(const char* subject, const char* payload, const char* receipt, const char* transactionId);
@@ -18,6 +29,7 @@ typedef void (*UnityPurchasingCallback)(const char* subject, const char* payload
 @end
 
 @interface UnityPurchasing : NSObject <SKProductsRequestDelegate, SKPaymentTransactionObserver> {
+    SKDownloadCallback downloadCallback;
     UnityPurchasingCallback messageCallback;
     NSMutableDictionary* validProducts;
     NSSet* productIds;
